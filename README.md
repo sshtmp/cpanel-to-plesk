@@ -9,7 +9,7 @@ Forked from plesk/kb-scripts, Edited by sshtmp.
 
 ## Usage
 ```
-./prepare-awstats.sh destination_domain [-s source_domain] [-p search_pattern] [-h]
+./prepare-awstats.sh destination_domain [-s source_domain] [-p search_pattern] [-f] [-h]
 ```
 
 ## Arguments
@@ -17,6 +17,7 @@ Forked from plesk/kb-scripts, Edited by sshtmp.
   destination_domain    Domain in Plesk (required)
   -s source_domain      Source domain where to search tmp files (optional)
   -p search_pattern     Manually override the search pattern (e.g., old domain name in files)
+  -f, --fix             Clean up already existing files in webstat/ and webstat-ssl/ (rename to standard format)
   -h                    Show this help
 ```
 

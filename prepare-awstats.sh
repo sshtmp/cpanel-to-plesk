@@ -13,18 +13,20 @@ usage() {
   cat <<EOF
 
 Usage:
-  ./$SCRIPT_NAME destination_domain [-s source_domain] [-p search_pattern] [-h]
+  ./$SCRIPT_NAME destination_domain [-s source_domain] [-p search_pattern] [-f] [-h]
 
 Arguments:
   destination_domain    Domain in Plesk (required)
   -s source_domain      Source domain where to search tmp files (optional)
   -p search_pattern     Manually override the search pattern (e.g., old domain name in files)
+  -f, --fix             Clean up already existing files in webstat/ and webstat-ssl/ (rename to standard format)
   -h                    Show this help
 
 Examples:
   ./$SCRIPT_NAME midominio.com
   ./$SCRIPT_NAME midominio.com -s origencpanel.com
   ./$SCRIPT_NAME nuevodominio.net -s cuentaprincipal.com -p viejodominio.com
+  ./$SCRIPT_NAME midominio.com -f
 
 EOF
 }
@@ -126,9 +128,7 @@ rename_and_move_txts() {
   local newname dest
   for file in "${files[@]}"; do
     base="$(basename "$file")"
-    # Extract the date part (awstatsMMYYYY)
     date_part="${base%%\.*}"
-    # Build clean name: date_part.dest_domain-suffix.txt
     newname="${date_part}.${dest_domain}${suffix}.txt"
     dest="$target_dir/$newname"
 
@@ -138,10 +138,53 @@ rename_and_move_txts() {
   done
 }
 
+fix_existing_files() {
+  local domain="$1"
+  local system_dir="/var/www/vhosts/system/$domain"
+  
+  if [[ ! -d "$system_dir" ]]; then
+    die "Destination system directory does not exist: $system_dir"
+  fi
+  
+  for stat_dir in "$system_dir/statistics/webstat" "$system_dir/statistics/webstat-ssl"; do
+    if [[ ! -d "$stat_dir" ]]; then
+      log "Directory $stat_dir does not exist, skipping"
+      continue
+    fi
+    
+    log "Cleaning up files in $stat_dir"
+    local all_files=("$stat_dir"/awstats*.txt)
+    if (( ${#all_files[@]} == 0 )); then
+      log "No .txt files found in $stat_dir"
+      continue
+    fi
+    
+    local file base date_part suffix newname
+    for file in "${all_files[@]}"; do
+      base="$(basename "$file")"
+      if [[ "$base" =~ ^(awstats[0-9]{6})\.(.+)-http\.txt$ ]] || [[ "$base" =~ ^(awstats[0-9]{6})\.(.+)-https\.txt$ ]]; then
+        date_part="${BASH_REMATCH[1]}"
+        suffix="${base##*-}"   # http.txt or https.txt
+        suffix="${suffix%.txt}"
+        newname="${date_part}.${domain}-${suffix}.txt"
+        if [[ "$base" != "$newname" ]]; then
+          log "Renaming: $base -> $newname"
+          mv -f -- "$file" "$stat_dir/$newname"
+        fi
+      else
+        warn "Skipping file with unexpected format: $base"
+      fi
+    done
+  done
+  
+  log "Cleanup completed for $domain"
+}
+
 # ---------- ARGUMENT PARSING ----------
 DOMAIN_DEST=""
 DOMAIN_SOURCE=""
 SEARCH_OVERRIDE=""
+FIX_MODE=0
 
 if [[ $# -eq 0 ]]; then
   usage
@@ -153,19 +196,27 @@ if [[ "$1" != "-"* ]]; then
   shift
 fi
 
-while getopts ":s:p:h" opt; do
-  case "$opt" in
-    s) DOMAIN_SOURCE="$OPTARG" ;;
-    p) SEARCH_OVERRIDE="$OPTARG" ;;
-    h)
+# Manual getopt to handle both -f and --fix
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -s)
+      DOMAIN_SOURCE="$2"
+      shift 2
+      ;;
+    -p)
+      SEARCH_OVERRIDE="$2"
+      shift 2
+      ;;
+    -f|--fix)
+      FIX_MODE=1
+      shift
+      ;;
+    -h)
       usage
       exit 0
       ;;
-    :)
-      die "Missing argument for -$OPTARG"
-      ;;
-    \?)
-      die "Invalid option: -$OPTARG"
+    *)
+      die "Invalid option: $1"
       ;;
   esac
 done
@@ -175,12 +226,21 @@ if [[ -z "$DOMAIN_DEST" ]]; then
   die "You must specify the destination domain as first argument"
 fi
 
+# ----- FIX MODE (no necesita source ni migración) -----
+if [[ $FIX_MODE -eq 1 ]]; then
+  ascii_header
+  echo
+  log "Fix mode enabled for domain: $DOMAIN_DEST"
+  fix_existing_files "$DOMAIN_DEST"
+  exit 0
+fi
+
+# ----- MODO NORMAL (migración) -----
 if [[ -z "$DOMAIN_SOURCE" ]]; then
   DOMAIN_SOURCE="$DOMAIN_DEST"
   log "Option -s not specified, using the same domain as source: $DOMAIN_SOURCE"
 fi
 
-# ---------- MAIN ----------
 ascii_header
 echo
 
@@ -219,13 +279,14 @@ if ! confirm "Are these paths correct?"; then
   die "Cancelled by user"
 fi
 
-# ---------- PATTERN DETECTION ----------
+# ---------- PATTERN DETECTION (CORREGIDA) ----------
 if [[ -n "$SEARCH_OVERRIDE" ]]; then
   SEARCH_PATTERN="$SEARCH_OVERRIDE"
   log "Using overridden search pattern: $SEARCH_PATTERN"
 else
   log "Analyzing available files to determine the correct pattern..."
   SEARCH_PATTERN="$DOMAIN_DEST"
+  PATTERN_FOUND=0
 
   if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
     shopt -s nullglob
@@ -242,25 +303,31 @@ else
         pattern="${pattern%.txt}"
         if [[ "$pattern" == "$DOMAIN_DEST" ]]; then
           SEARCH_PATTERN="$pattern"
+          PATTERN_FOUND=1
           log "Found exact pattern match: $pattern"
-          break 2
+          break
         fi
       done
       
-      # 2. Pattern that starts with DOMAIN_DEST + dot (e.g., "dominio.org.algo")
-      for file in "${all_files[@]}"; do
-        base="$(basename "$file")"
-        pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
-        pattern="${pattern%.txt}"
-        if [[ "$pattern" == "$DOMAIN_DEST".* ]] || [[ "$pattern" == "$DOMAIN_DEST" ]]; then
-          SEARCH_PATTERN="$pattern"
-          log "Found pattern starting with destination domain: $pattern"
-          break 2
-        fi
-      done
+      # 2. Pattern that starts with DOMAIN_DEST + dot
+      if [[ $PATTERN_FOUND -eq 0 ]]; then
+        for file in "${all_files[@]}"; do
+          base="$(basename "$file")"
+          pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
+          pattern="${pattern%.txt}"
+          if [[ "$pattern" == "$DOMAIN_DEST".* ]]; then
+            SEARCH_PATTERN="$pattern"
+            PATTERN_FOUND=1
+            log "Found pattern starting with destination domain: $pattern"
+            break
+          fi
+        done
+      fi
       
-      warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
-      warn "Will use destination domain as pattern: $SEARCH_PATTERN"
+      if [[ $PATTERN_FOUND -eq 0 ]]; then
+        warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
+        warn "Will use destination domain as pattern: $SEARCH_PATTERN"
+      fi
     else
       log "No awstats files found in $CPANEL_AWSTATS_DIR"
     fi
