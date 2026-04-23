@@ -22,7 +22,7 @@ Arguments:
 
 Examples:
   ./$SCRIPT_NAME midominio.com
-  ./$SCRIPT_NAME midominio.com -s origencpanel.com
+  ./$SCRIPT_NAME sub.dominio.com -s origencpanel.com
 
 EOF
 }
@@ -36,7 +36,7 @@ ascii_header() {
 
      Script to migrate AWStats statistics
             from cPanel to Plesk.
- Forked from plesk/kb-scripts, Edited by sshtmp
+ Forked from plesk/kb-scripts, Edited by Rodri
 EOF
 }
 
@@ -158,17 +158,15 @@ rename_and_move_txts() {
 }
 
 # ---------- ARGUMENT PARSING ----------
-# First positional argument is destination domain
 DOMAIN_DEST=""
 DOMAIN_SOURCE=""
 
-# Manual parsing because we have a positional arg
 if [[ $# -eq 0 ]]; then
   usage
   die "Destination domain is required"
 fi
 
-# The first argument (if not starting with -) is DOMAIN_DEST
+# First argument is destination domain
 if [[ "$1" != "-"* ]]; then
   DOMAIN_DEST="$1"
   shift
@@ -208,23 +206,29 @@ echo
 log "Destination domain (Plesk): $DOMAIN_DEST"
 log "Source domain (tmp):        $DOMAIN_SOURCE"
 
+# Source: must exist with tmp/awstats
 log "Searching for source domain root path: $DOMAIN_SOURCE"
-SITE_ROOT_SOURCE="$(find_site_root "$DOMAIN_SOURCE")" || die "Could not locate the root path for $DOMAIN_SOURCE"
+SITE_ROOT_SOURCE="$(find_site_root "$DOMAIN_SOURCE")" || die "Could not locate the root path for $DOMAIN_SOURCE (missing httpdocs/tmp?)"
 
-log "Verifying destination domain root path: $DOMAIN_DEST"
-SITE_ROOT_DEST="$(find_site_root "$DOMAIN_DEST")" || die "Could not locate the root path for $DOMAIN_DEST"
+# Destination: we don't need a full vhost root, just the statistics directory
+# But we check if the system directory exists (it should for any domain in Plesk)
+PLESK_SYSTEM_DIR="/var/www/vhosts/system/$DOMAIN_DEST"
+if [[ ! -d "$PLESK_SYSTEM_DIR" ]]; then
+  warn "Destination system directory does not exist: $PLESK_SYSTEM_DIR"
+  warn "Statistics may not work correctly. Continuing anyway..."
+fi
 
 TMP_DIR="$SITE_ROOT_SOURCE/tmp"
 CPANEL_AWSTATS_DIR="$TMP_DIR/awstats"
 CPANEL_AWSTATS_SSL_DIR="$CPANEL_AWSTATS_DIR/ssl"
 
-PLESK_STATS_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat"
-PLESK_STATS_SSL_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat-ssl"
+PLESK_STATS_DIR="$PLESK_SYSTEM_DIR/statistics/webstat"
+PLESK_STATS_SSL_DIR="$PLESK_SYSTEM_DIR/statistics/webstat-ssl"
 
 echo
 log "Calculated paths:"
 printf '  Source (tmp):          %s\n' "$SITE_ROOT_SOURCE"
-printf '  Destination (root):    %s\n' "$SITE_ROOT_DEST"
+printf '  Destination system:    %s\n' "$PLESK_SYSTEM_DIR"
 printf '  awstats cPanel:        %s\n' "$CPANEL_AWSTATS_DIR"
 printf '  awstats SSL:           %s\n' "$CPANEL_AWSTATS_SSL_DIR"
 printf '  Destination HTTP:      %s\n' "$PLESK_STATS_DIR"
@@ -254,7 +258,6 @@ if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
       pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
       pattern="${pattern%.txt}"
       
-      # Get real domain for this pattern
       real_domain="$(detect_real_domain "$pattern")"
       
       if [[ "$real_domain" == "$DOMAIN_DEST" ]]; then
