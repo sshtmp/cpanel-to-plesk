@@ -210,12 +210,10 @@ log "Source domain (tmp):        $DOMAIN_SOURCE"
 log "Searching for source domain root path: $DOMAIN_SOURCE"
 SITE_ROOT_SOURCE="$(find_site_root "$DOMAIN_SOURCE")" || die "Could not locate the root path for $DOMAIN_SOURCE (missing httpdocs/tmp?)"
 
-# Destination: we don't need a full vhost root, just the statistics directory
-# But we check if the system directory exists (it should for any domain in Plesk)
+# Destination: system directory must exist
 PLESK_SYSTEM_DIR="/var/www/vhosts/system/$DOMAIN_DEST"
 if [[ ! -d "$PLESK_SYSTEM_DIR" ]]; then
-  warn "Destination system directory does not exist: $PLESK_SYSTEM_DIR"
-  warn "Statistics may not work correctly. Continuing anyway..."
+  die "Destination system directory does not exist: $PLESK_SYSTEM_DIR. Please create the domain/subdomain in Plesk first."
 fi
 
 TMP_DIR="$SITE_ROOT_SOURCE/tmp"
@@ -250,28 +248,46 @@ if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
   shopt -u nullglob
   
   if (( ${#all_files[@]} > 0 )); then
-    log "Found ${#all_files[@]} total files, scanning for pattern matching destination domain..."
+    log "Found ${#all_files[@]} total files"
     
-    FOUND_MATCH=0
+    # First, check if any file has an exact match with DOMAIN_DEST
+    EXACT_MATCH=0
     for file in "${all_files[@]}"; do
       base="$(basename "$file")"
       pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
       pattern="${pattern%.txt}"
-      
-      real_domain="$(detect_real_domain "$pattern")"
-      
-      if [[ "$real_domain" == "$DOMAIN_DEST" ]]; then
-        log "Found matching pattern: $pattern (real domain: $real_domain)"
+      if [[ "$pattern" == "$DOMAIN_DEST" ]]; then
+        log "Found exact pattern match: $pattern"
         SEARCH_PATTERN="$pattern"
-        FOUND_MATCH=1
+        EXACT_MATCH=1
         break
       fi
     done
     
-    if [[ $FOUND_MATCH -eq 0 ]]; then
-      warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
-      warn "Will use destination domain as pattern: $SEARCH_PATTERN"
-      warn "This may not find any files to move"
+    # If no exact match, try mapping via detect_real_domain
+    if [[ $EXACT_MATCH -eq 0 ]]; then
+      log "No exact match found, scanning for pattern that maps to destination domain..."
+      FOUND_MATCH=0
+      for file in "${all_files[@]}"; do
+        base="$(basename "$file")"
+        pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
+        pattern="${pattern%.txt}"
+        
+        real_domain="$(detect_real_domain "$pattern")"
+        
+        if [[ "$real_domain" == "$DOMAIN_DEST" ]]; then
+          log "Found mapping pattern: $pattern (real domain: $real_domain)"
+          SEARCH_PATTERN="$pattern"
+          FOUND_MATCH=1
+          break
+        fi
+      done
+      
+      if [[ $FOUND_MATCH -eq 0 ]]; then
+        warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
+        warn "Will use destination domain as pattern: $SEARCH_PATTERN"
+        warn "This may not find any files to move"
+      fi
     fi
   else
     log "No awstats files found in $CPANEL_AWSTATS_DIR"
