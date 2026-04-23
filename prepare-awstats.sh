@@ -114,17 +114,35 @@ rename_and_move_txts() {
 
   mkdir -p "$target_dir"
 
-  files=("$source_dir"/awstats*."$search_pattern".txt)
+  # Gather all awstats*.txt files
+  local all_files=("$source_dir"/awstats*.txt)
+  if (( ${#all_files[@]} == 0 )); then
+    log "No .txt files found in $source_dir ($kind)."
+    return 0
+  fi
+
+  # Filter files where the domain part exactly matches search_pattern
+  local file base domain_part
+  for file in "${all_files[@]}"; do
+    base="$(basename "$file")"
+    # Extract the part after awstatsYYYYMM. and before .txt
+    domain_part="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
+    domain_part="${domain_part%.txt}"
+    if [[ "$domain_part" == "$search_pattern" ]]; then
+      files+=("$file")
+    fi
+  done
+
   if (( ${#files[@]} == 0 )); then
-    log "No .txt files found for pattern '$search_pattern' in $source_dir ($kind)."
+    log "No files with exact domain pattern '$search_pattern' in $source_dir ($kind)."
     return 0
   fi
 
   log "Processing ${#files[@]} file(s) of $kind from: $source_dir"
-  log "Filtering by pattern: $search_pattern"
+  log "Filtering exact pattern: $search_pattern"
   log "Destination: $target_dir"
 
-  local file base newname dest
+  local newname dest
   for file in "${files[@]}"; do
     base="$(basename "$file")"
     newname="${base%.txt}${suffix}.txt"
