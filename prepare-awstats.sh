@@ -6,7 +6,7 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log()  { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
-warn() { printf '[%s] WARNING: %s\n' "$(date '+%F %T')' "$*" >&2; }
+warn() { printf '[%s] WARNING: %s\n' "$(date '+%F %T')" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
 usage() {
