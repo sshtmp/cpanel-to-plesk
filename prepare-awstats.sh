@@ -82,8 +82,22 @@ find_site_root() {
 
 detect_real_domain() {
   local cpanel_name="$1"
-  local domain_prefix="${cpanel_name%%.*}"
   
+  # Primero, comprobar si el nombre completo existe como dominio en Plesk
+  if [[ -d "/var/www/vhosts/system/$cpanel_name" ]]; then
+    echo "$cpanel_name"
+    return 0
+  fi
+  
+  # Extraer la primera parte (antes del primer punto)
+  local first_part="${cpanel_name%%.*}"
+  if [[ -d "/var/www/vhosts/system/$first_part" ]]; then
+    echo "$first_part"
+    return 0
+  fi
+  
+  # Si no, buscar por prefijo (comportamiento antiguo)
+  local domain_prefix="$first_part"
   log "Searching for real domain for prefix: $domain_prefix"
   
   local found_domain=""
@@ -167,13 +181,11 @@ if [[ $# -eq 0 ]]; then
   die "Destination domain is required"
 fi
 
-# First argument is destination domain
 if [[ "$1" != "-"* ]]; then
   DOMAIN_DEST="$1"
   shift
 fi
 
-# Parse remaining options
 while getopts ":s:h" opt; do
   case "$opt" in
     s) DOMAIN_SOURCE="$OPTARG" ;;
@@ -207,11 +219,9 @@ echo
 log "Destination domain (Plesk): $DOMAIN_DEST"
 log "Source domain (tmp):        $DOMAIN_SOURCE"
 
-# Source: must exist with tmp/awstats
 log "Searching for source domain root path: $DOMAIN_SOURCE"
 SITE_ROOT_SOURCE="$(find_site_root "$DOMAIN_SOURCE")" || die "Could not locate the root path for $DOMAIN_SOURCE (missing httpdocs/tmp?)"
 
-# Destination: system directory must exist
 PLESK_SYSTEM_DIR="/var/www/vhosts/system/$DOMAIN_DEST"
 if [[ ! -d "$PLESK_SYSTEM_DIR" ]]; then
   die "Destination system directory does not exist: $PLESK_SYSTEM_DIR. Please create the domain/subdomain in Plesk first."
@@ -251,7 +261,6 @@ if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
   if (( ${#all_files[@]} > 0 )); then
     log "Found ${#all_files[@]} total files"
     
-    # First, check if any file has an exact match with DOMAIN_DEST
     EXACT_MATCH=0
     for file in "${all_files[@]}"; do
       base="$(basename "$file")"
@@ -265,7 +274,6 @@ if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
       fi
     done
     
-    # If no exact match, try mapping via detect_real_domain
     if [[ $EXACT_MATCH -eq 0 ]]; then
       log "No exact match found, scanning for pattern that maps to destination domain..."
       FOUND_MATCH=0
