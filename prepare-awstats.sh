@@ -44,6 +44,7 @@ confirm() {
   local prompt="$1"
   local reply
   read -r -p "$prompt [y/N]: " reply
+  echo
   case "${reply,,}" in
     y|yes) return 0 ;;
     *) return 1 ;;
