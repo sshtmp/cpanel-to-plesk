@@ -12,24 +12,12 @@ die()  { printf '[%s] ERROR: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 usage() {
   cat <<EOF
 Usage:
-  ./$SCRIPT_NAME -P destination_domain [-s source_domain] [-o cpanel_name] [-h]
+  ./$SCRIPT_NAME -P destination_domain [-s source_domain] [-h]
 
 Options:
   -P   Destination domain in Plesk (required)
-  -s   Source domain where tmp/awstats is located (optional)
-       If not specified, it is assumed to be the same as -P
-  -o   Old domain name in cPanel (optional, for addon domains)
-  -h   Help
-
-Examples:
-  # Main domain (source = destination)
-  ./$SCRIPT_NAME -P example.com
-  
-  # Addon domain: files are in the main domain's tmp
-  ./$SCRIPT_NAME -P addon.info -s example.com
-  
-  # With manual cPanel name mapping
-  ./$SCRIPT_NAME -P addon2.info -s example.com -o addon2.example.com
+  -s   Source domain where to search tmp files (optional)
+  -h   Show this help
 EOF
 }
 
@@ -53,26 +41,6 @@ confirm() {
     y|yes) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-declare -A CPANEL_TO_PLESK=(
-  ["borradodatos.borradodatos.com"]="borradodatos.com"
-  ["borradocintas.borradodatos.com"]="borradocintas.info"
-  ["borradodatosseguro.borradodatos.com"]="borradodatosseguro.info"
-)
-
-get_cpanel_name() {
-  local plesk_domain="$1"
-  
-  for cpanel_name in "${!CPANEL_TO_PLESK[@]}"; do
-    if [[ "${CPANEL_TO_PLESK[$cpanel_name]}" == "$plesk_domain" ]]; then
-      echo "$cpanel_name"
-      return 0
-    fi
-  done
-  
-  echo "$plesk_domain"
-  return 0
 }
 
 find_site_root() {
@@ -104,29 +72,56 @@ find_site_root() {
   return 1
 }
 
+detect_real_domain() {
+  local cpanel_name="$1"
+  
+  local domain_prefix="${cpanel_name%%.*}"
+  
+  log "Searching for real domain for prefix: $domain_prefix"
+  
+  local found_domain=""
+  while IFS= read -r domain_dir; do
+    local domain_name="$(basename "$domain_dir")"
+    if [[ "$domain_name" == "$domain_prefix".* ]] || [[ "$domain_name" == "$domain_prefix" ]]; then
+      found_domain="$domain_name"
+      log "Found: $found_domain"
+      break
+    fi
+  done < <(find /var/www/vhosts/system -maxdepth 1 -type d 2>/dev/null | grep -v "/system$" | sort)
+  
+  if [[ -n "$found_domain" ]]; then
+    echo "$found_domain"
+    return 0
+  else
+    warn "Could not detect real domain for '$cpanel_name', using as is"
+    echo "$cpanel_name"
+    return 0
+  fi
+}
+
 rename_and_move_txts() {
   local source_dir="$1"
   local target_dir="$2"
   local suffix="$3"
   local kind="$4"
-  local cpanel_name="$5"
+  local search_pattern="$5"
   local files=()
 
   if [[ ! -d "$source_dir" ]]; then
-    log "Source directory for $kind does not exist: $source_dir"
+    warn "Source directory for $kind does not exist: $source_dir"
     return 0
   fi
 
   mkdir -p "$target_dir"
 
-  files=("$source_dir"/awstats*."$cpanel_name".txt)
+  files=("$source_dir"/awstats*."$search_pattern".txt)
   if (( ${#files[@]} == 0 )); then
-    log "No .txt files found for cPanel name '$cpanel_name' in $source_dir ($kind)."
+    log "No .txt files found for pattern '$search_pattern' in $source_dir ($kind)."
     return 0
   fi
 
-  log "Processing ${#files[@]} $kind file(s) from: $source_dir"
-  log "Filtering by cPanel name: $cpanel_name"
+  log "Processing ${#files[@]} file(s) of $kind from: $source_dir"
+  log "Filtering by pattern: $search_pattern"
   log "Destination: $target_dir"
 
   local file base newname dest
@@ -143,13 +138,11 @@ rename_and_move_txts() {
 
 DOMAIN_DEST=""
 DOMAIN_SOURCE=""
-CPANEL_NAME=""
 
-while getopts ":P:s:o:h" opt; do
+while getopts ":P:s:h" opt; do
   case "$opt" in
     P) DOMAIN_DEST="$OPTARG" ;;
     s) DOMAIN_SOURCE="$OPTARG" ;;
-    o) CPANEL_NAME="$OPTARG" ;;
     h)
       usage
       exit 0
@@ -167,56 +160,99 @@ done
 
 if [[ -z "$DOMAIN_SOURCE" ]]; then
   DOMAIN_SOURCE="$DOMAIN_DEST"
-  log "No source domain specified (-s), using the same as destination: $DOMAIN_SOURCE"
-fi
-
-if [[ -z "$CPANEL_NAME" ]]; then
-  CPANEL_NAME="$(get_cpanel_name "$DOMAIN_DEST")"
-  log "Inferred cPanel name: $CPANEL_NAME"
+  log "Option -s not specified, using the same domain as source: $DOMAIN_SOURCE"
 fi
 
 ascii_header
 echo
+
 log "Destination domain (Plesk): $DOMAIN_DEST"
-log "Source domain (cPanel tmp): $DOMAIN_SOURCE"
-log "Name in cPanel files: $CPANEL_NAME"
+log "Source domain (tmp):        $DOMAIN_SOURCE"
 
-log "Looking for the root path of the source domain $DOMAIN_SOURCE..."
-SITE_ROOT_SOURCE="$(find_site_root "$DOMAIN_SOURCE")" || die "Could not locate the root path of $DOMAIN_SOURCE in /var/www/vhosts"
+log "Searching for source domain root path: $DOMAIN_SOURCE"
+SITE_ROOT_SOURCE="$(find_site_root "$DOMAIN_SOURCE")" || die "Could not locate the root path for $DOMAIN_SOURCE"
 
-PLESK_STATS_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat"
-PLESK_STATS_SSL_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat-ssl"
+log "Verifying destination domain root path: $DOMAIN_DEST"
+SITE_ROOT_DEST="$(find_site_root "$DOMAIN_DEST")" || die "Could not locate the root path for $DOMAIN_DEST"
 
 TMP_DIR="$SITE_ROOT_SOURCE/tmp"
 CPANEL_AWSTATS_DIR="$TMP_DIR/awstats"
 CPANEL_AWSTATS_SSL_DIR="$CPANEL_AWSTATS_DIR/ssl"
 
+PLESK_STATS_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat"
+PLESK_STATS_SSL_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat-ssl"
+
 echo
 log "Calculated paths:"
-printf '  Source root (source domain):  %s\n' "$SITE_ROOT_SOURCE"
-printf '  Source tmp:                   %s\n' "$TMP_DIR"
-printf '  cPanel awstats (HTTP):        %s\n' "$CPANEL_AWSTATS_DIR"
-printf '  awstats SSL (HTTPS):          %s\n' "$CPANEL_AWSTATS_SSL_DIR"
-printf '  Destination HTTP (Plesk):     %s\n' "$PLESK_STATS_DIR"
-printf '  Destination HTTPS (Plesk):    %s\n' "$PLESK_STATS_SSL_DIR"
+printf '  Source (tmp):          %s\n' "$SITE_ROOT_SOURCE"
+printf '  Destination (root):    %s\n' "$SITE_ROOT_DEST"
+printf '  awstats cPanel:        %s\n' "$CPANEL_AWSTATS_DIR"
+printf '  awstats SSL:           %s\n' "$CPANEL_AWSTATS_SSL_DIR"
+printf '  Destination HTTP:      %s\n' "$PLESK_STATS_DIR"
+printf '  Destination HTTPS:     %s\n' "$PLESK_STATS_SSL_DIR"
 echo
 
-if ! confirm "Are these paths correct and does everything exist where it should?"; then
+if ! confirm "Are these paths correct?"; then
   die "Cancelled by user"
 fi
 
-log "Confirmed. Proceeding with the process."
+log "Analyzing available files to determine the correct pattern..."
+
+SEARCH_PATTERN="$DOMAIN_DEST"
+
+if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
+  shopt -s nullglob
+  awstats_files=("$CPANEL_AWSTATS_DIR"/awstats*.txt)
+  shopt -u nullglob
+  
+  if (( ${#awstats_files[@]} > 0 )); then
+    sample_file="$(basename "${awstats_files[0]}")"
+    sample_pattern="${sample_file#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
+    sample_pattern="${sample_pattern%.txt}"
+    
+    log "Sample file: $sample_file"
+    log "Detected pattern: $sample_pattern"
+    
+    if [[ "$sample_pattern" != "$DOMAIN_DEST" ]]; then
+      log "Pattern ($sample_pattern) differs from destination domain ($DOMAIN_DEST)"
+      
+      prefix="${sample_pattern%%.*}"
+      
+      DETECTED_DOMAIN="$(detect_real_domain "$sample_pattern")"
+      
+      if [[ "$DETECTED_DOMAIN" != "$sample_pattern" ]]; then
+        log "Real domain detected: $DETECTED_DOMAIN"
+        
+        if [[ "$DETECTED_DOMAIN" == "$DOMAIN_DEST" ]]; then
+          log "Matches requested destination, using pattern: $sample_pattern"
+          SEARCH_PATTERN="$sample_pattern"
+        else
+          warn "Detected pattern ($sample_pattern) corresponds to $DETECTED_DOMAIN, but you requested $DOMAIN_DEST"
+          warn "Using pattern: $DOMAIN_DEST (may not find files)"
+        fi
+      fi
+    fi
+  fi
+fi
+
+log "Final search pattern: $SEARCH_PATTERN"
+echo
+
+if ! confirm "Use this pattern to filter files?"; then
+  log "You can run again with -P and the exact pattern name"
+  die "Cancelled by user"
+fi
 
 log "Preparing HTTP statistics..."
-rename_and_move_txts "$CPANEL_AWSTATS_DIR" "$PLESK_STATS_DIR" "-http" "HTTP" "$CPANEL_NAME"
+rename_and_move_txts "$CPANEL_AWSTATS_DIR" "$PLESK_STATS_DIR" "-http" "HTTP" "$SEARCH_PATTERN"
 
 log "Preparing HTTPS statistics..."
-rename_and_move_txts "$CPANEL_AWSTATS_SSL_DIR" "$PLESK_STATS_SSL_DIR" "-https" "HTTPS" "$CPANEL_NAME"
+rename_and_move_txts "$CPANEL_AWSTATS_SSL_DIR" "$PLESK_STATS_SSL_DIR" "-https" "HTTPS" "$SEARCH_PATTERN"
 
 echo
 log "Preparation process completed."
 
-if confirm "Do you want to run ./rebuild-awstats.sh -R $DOMAIN_DEST to rebuild the statistics?"; then
+if confirm "Do you want to run ./rebuild-awstats.sh -R $DOMAIN_DEST to rebuild statistics?"; then
   REBUILD_SCRIPT="$SCRIPT_DIR/rebuild-awstats.sh"
   if [[ ! -f "$REBUILD_SCRIPT" ]]; then
     die "Cannot find $REBUILD_SCRIPT"
@@ -226,7 +262,7 @@ if confirm "Do you want to run ./rebuild-awstats.sh -R $DOMAIN_DEST to rebuild t
   bash "$REBUILD_SCRIPT" -R "$DOMAIN_DEST"
   log "Rebuild completed."
 else
-  log "Rebuild was not executed. All done; if you want to rebuild, you'll have to do it manually."
+  log "Rebuild has not been executed."
 fi
 
 exit 0
