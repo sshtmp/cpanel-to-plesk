@@ -6,7 +6,7 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log()  { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
-warn() { printf '[%s] WARNING: %s\n' "$(date '+%F %T')" "$*" >&2; }
+warn() { printf '[%s] WARNING: %s\n' "$(date '+%F %T')' "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
 usage() {
@@ -78,47 +78,6 @@ find_site_root() {
   done < <(find /var/www/vhosts -maxdepth 3 -type d -name "$domain" 2>/dev/null | sort)
 
   return 1
-}
-
-# --------------------------------------------------------------
-# FUNCIÓN CORREGIDA: detecta el dominio real en Plesk
-# --------------------------------------------------------------
-detect_real_domain() {
-  local cpanel_name="$1"
-  
-  # 1. Si el nombre completo del patrón existe como dominio en Plesk
-  if [[ -d "/var/www/vhosts/system/$cpanel_name" ]]; then
-    echo "$cpanel_name"
-    return 0
-  fi
-  
-  # 2. Extraer la primera parte (hasta el primer punto)
-  local first_part="${cpanel_name%%.*}"
-  if [[ -d "/var/www/vhosts/system/$first_part" ]]; then
-    echo "$first_part"
-    return 0
-  fi
-  
-  # 3. Fallback: buscar por prefijo (comportamiento antiguo)
-  log "Searching for real domain for prefix: $first_part"
-  local found_domain=""
-  while IFS= read -r domain_dir; do
-    local domain_name="$(basename "$domain_dir")"
-    if [[ "$domain_name" == "$first_part".* ]] || [[ "$domain_name" == "$first_part" ]]; then
-      found_domain="$domain_name"
-      log "Found: $found_domain"
-      break
-    fi
-  done < <(find /var/www/vhosts/system -maxdepth 1 -type d 2>/dev/null | grep -v "/system$" | sort)
-  
-  if [[ -n "$found_domain" ]]; then
-    echo "$found_domain"
-    return 0
-  else
-    warn "Could not detect real domain for '$cpanel_name', using as is"
-    echo "$cpanel_name"
-    return 0
-  fi
 }
 
 rename_and_move_txts() {
@@ -249,7 +208,7 @@ if ! confirm "Are these paths correct?"; then
   die "Cancelled by user"
 fi
 
-# ---------- SMART PATTERN DETECTION ----------
+# ---------- PATTERN DETECTION (mejorada) ----------
 log "Analyzing available files to determine the correct pattern..."
 
 SEARCH_PATTERN="$DOMAIN_DEST"
@@ -262,43 +221,33 @@ if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
   if (( ${#all_files[@]} > 0 )); then
     log "Found ${#all_files[@]} total files"
     
-    EXACT_MATCH=0
+    # 1. Exact match
     for file in "${all_files[@]}"; do
       base="$(basename "$file")"
       pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
       pattern="${pattern%.txt}"
       if [[ "$pattern" == "$DOMAIN_DEST" ]]; then
-        log "Found exact pattern match: $pattern"
         SEARCH_PATTERN="$pattern"
-        EXACT_MATCH=1
-        break
+        log "Found exact pattern match: $pattern"
+        break 2
       fi
     done
     
-    if [[ $EXACT_MATCH -eq 0 ]]; then
-      log "No exact match found, scanning for pattern that maps to destination domain..."
-      FOUND_MATCH=0
-      for file in "${all_files[@]}"; do
-        base="$(basename "$file")"
-        pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
-        pattern="${pattern%.txt}"
-        
-        real_domain="$(detect_real_domain "$pattern")"
-        
-        if [[ "$real_domain" == "$DOMAIN_DEST" ]]; then
-          log "Found mapping pattern: $pattern (real domain: $real_domain)"
-          SEARCH_PATTERN="$pattern"
-          FOUND_MATCH=1
-          break
-        fi
-      done
-      
-      if [[ $FOUND_MATCH -eq 0 ]]; then
-        warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
-        warn "Will use destination domain as pattern: $SEARCH_PATTERN"
-        warn "This may not find any files to move"
+    # 2. Pattern that starts with DOMAIN_DEST + dot (e.g., "dominio.org.algo")
+    for file in "${all_files[@]}"; do
+      base="$(basename "$file")"
+      pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
+      pattern="${pattern%.txt}"
+      if [[ "$pattern" == "$DOMAIN_DEST".* ]] || [[ "$pattern" == "$DOMAIN_DEST" ]]; then
+        SEARCH_PATTERN="$pattern"
+        log "Found pattern starting with destination domain: $pattern"
+        break 2
       fi
-    fi
+    done
+    
+    # 3. Si no, advertir
+    warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
+    warn "Will use destination domain as pattern: $SEARCH_PATTERN"
   else
     log "No awstats files found in $CPANEL_AWSTATS_DIR"
   fi
