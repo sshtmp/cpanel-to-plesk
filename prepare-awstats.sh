@@ -13,13 +13,14 @@ usage() {
   cat <<EOF
 
 Usage:
-  ./$SCRIPT_NAME destination_domain [-s source_domain] [-p search_pattern] [-f] [-h]
+  ./$SCRIPT_NAME destination_domain [-s source_domain] [-p search_pattern] [-f|--fix] [--fix-all] [-h]
 
 Arguments:
-  destination_domain    Domain in Plesk (required)
+  destination_domain    Domain in Plesk (required for migration or fix mode)
   -s source_domain      Source domain where to search tmp files (optional)
   -p search_pattern     Manually override the search pattern (e.g., old domain name in files)
-  -f, --fix             Clean up already existing files in webstat/ and webstat-ssl/ (rename to standard format)
+  -f, --fix             Clean up already existing files in webstat/ and webstat-ssl/ for a single domain
+  --fix-all             Clean up files for ALL domains in /var/www/vhosts/system/
   -h                    Show this help
 
 Examples:
@@ -27,6 +28,7 @@ Examples:
   ./$SCRIPT_NAME midominio.com -s origencpanel.com
   ./$SCRIPT_NAME nuevodominio.net -s cuentaprincipal.com -p viejodominio.com
   ./$SCRIPT_NAME midominio.com -f
+  ./$SCRIPT_NAME --fix-all
 
 EOF
 }
@@ -143,7 +145,8 @@ fix_existing_files() {
   local system_dir="/var/www/vhosts/system/$domain"
   
   if [[ ! -d "$system_dir" ]]; then
-    die "Destination system directory does not exist: $system_dir"
+    warn "System directory does not exist for $domain, skipping"
+    return 1
   fi
   
   for stat_dir in "$system_dir/statistics/webstat" "$system_dir/statistics/webstat-ssl"; do
@@ -164,7 +167,7 @@ fix_existing_files() {
       base="$(basename "$file")"
       if [[ "$base" =~ ^(awstats[0-9]{6})\.(.+)-http\.txt$ ]] || [[ "$base" =~ ^(awstats[0-9]{6})\.(.+)-https\.txt$ ]]; then
         date_part="${BASH_REMATCH[1]}"
-        suffix="${base##*-}"   # http.txt or https.txt
+        suffix="${base##*-}"
         suffix="${suffix%.txt}"
         newname="${date_part}.${domain}-${suffix}.txt"
         if [[ "$base" != "$newname" ]]; then
@@ -178,6 +181,21 @@ fix_existing_files() {
   done
   
   log "Cleanup completed for $domain"
+  return 0
+}
+
+fix_all_domains() {
+  log "Starting --fix-all mode. Processing all domains in /var/www/vhosts/system/"
+  local count=0
+  for system_domain_dir in /var/www/vhosts/system/*; do
+    if [[ -d "$system_domain_dir" ]]; then
+      local domain_name="$(basename "$system_domain_dir")"
+      log "Processing domain: $domain_name"
+      fix_existing_files "$domain_name"
+      ((count++))
+    fi
+  done
+  log "Fix-all completed. Processed $count domains."
 }
 
 # ---------- ARGUMENT PARSING ----------
@@ -185,18 +203,14 @@ DOMAIN_DEST=""
 DOMAIN_SOURCE=""
 SEARCH_OVERRIDE=""
 FIX_MODE=0
+FIX_ALL_MODE=0
 
 if [[ $# -eq 0 ]]; then
   usage
-  die "Destination domain is required"
+  exit 0
 fi
 
-if [[ "$1" != "-"* ]]; then
-  DOMAIN_DEST="$1"
-  shift
-fi
-
-# Manual getopt to handle both -f and --fix
+POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -s)
@@ -211,23 +225,44 @@ while [[ $# -gt 0 ]]; do
       FIX_MODE=1
       shift
       ;;
+    --fix-all)
+      FIX_ALL_MODE=1
+      shift
+      ;;
     -h)
       usage
       exit 0
       ;;
-    *)
+    -*)
       die "Invalid option: $1"
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1")
+      shift
       ;;
   esac
 done
 
-if [[ -z "$DOMAIN_DEST" ]]; then
-  usage
-  die "You must specify the destination domain as first argument"
+if [[ ${#POSITIONAL_ARGS[@]} -gt 0 ]]; then
+  DOMAIN_DEST="${POSITIONAL_ARGS[0]}"
 fi
 
-# ----- FIX MODE (no necesita source ni migración) -----
+# ----- FIX-ALL MODE -----
+if [[ $FIX_ALL_MODE -eq 1 ]]; then
+  if [[ -n "$DOMAIN_DEST" ]] || [[ $FIX_MODE -eq 1 ]] || [[ -n "$DOMAIN_SOURCE" ]] || [[ -n "$SEARCH_OVERRIDE" ]]; then
+    warn "--fix-all is exclusive. Other options will be ignored."
+  fi
+  ascii_header
+  echo
+  fix_all_domains
+  exit 0
+fi
+
+# ----- FIX MODE (single domain) -----
 if [[ $FIX_MODE -eq 1 ]]; then
+  if [[ -z "$DOMAIN_DEST" ]]; then
+    die "For --fix mode, please specify the domain as first argument: ./$SCRIPT_NAME dominio.com -f"
+  fi
   ascii_header
   echo
   log "Fix mode enabled for domain: $DOMAIN_DEST"
@@ -235,7 +270,12 @@ if [[ $FIX_MODE -eq 1 ]]; then
   exit 0
 fi
 
-# ----- MODO NORMAL (migración) -----
+# ----- NORMAL MIGRATION MODE -----
+if [[ -z "$DOMAIN_DEST" ]]; then
+  usage
+  die "Destination domain is required for migration"
+fi
+
 if [[ -z "$DOMAIN_SOURCE" ]]; then
   DOMAIN_SOURCE="$DOMAIN_DEST"
   log "Option -s not specified, using the same domain as source: $DOMAIN_SOURCE"
@@ -279,7 +319,7 @@ if ! confirm "Are these paths correct?"; then
   die "Cancelled by user"
 fi
 
-# ---------- PATTERN DETECTION (CORREGIDA) ----------
+# ---------- PATTERN DETECTION ----------
 if [[ -n "$SEARCH_OVERRIDE" ]]; then
   SEARCH_PATTERN="$SEARCH_OVERRIDE"
   log "Using overridden search pattern: $SEARCH_PATTERN"
@@ -287,6 +327,7 @@ else
   log "Analyzing available files to determine the correct pattern..."
   SEARCH_PATTERN="$DOMAIN_DEST"
   PATTERN_FOUND=0
+  IS_FALLBACK=0
 
   if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
     shopt -s nullglob
@@ -296,7 +337,6 @@ else
     if (( ${#all_files[@]} > 0 )); then
       log "Found ${#all_files[@]} total files"
       
-      # 1. Exact match
       for file in "${all_files[@]}"; do
         base="$(basename "$file")"
         pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
@@ -309,7 +349,6 @@ else
         fi
       done
       
-      # 2. Pattern that starts with DOMAIN_DEST + dot
       if [[ $PATTERN_FOUND -eq 0 ]]; then
         for file in "${all_files[@]}"; do
           base="$(basename "$file")"
@@ -327,21 +366,45 @@ else
       if [[ $PATTERN_FOUND -eq 0 ]]; then
         warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
         warn "Will use destination domain as pattern: $SEARCH_PATTERN"
+        IS_FALLBACK=1
       fi
     else
       log "No awstats files found in $CPANEL_AWSTATS_DIR"
+      IS_FALLBACK=1
     fi
   else
     log "Directory $CPANEL_AWSTATS_DIR does not exist"
+    IS_FALLBACK=1
   fi
 fi
 
-log "Final search pattern: $SEARCH_PATTERN"
-echo
+# Loop to allow manual pattern input if user rejects suggested pattern
+while true; do
+  log "Final search pattern: $SEARCH_PATTERN"
+  echo
 
-if ! confirm "Use this pattern to filter files?"; then
-  die "Cancelled by user"
-fi
+  if [[ $IS_FALLBACK -eq 1 ]]; then
+    # If it's the fallback (default pattern) and user says no, exit
+    if ! confirm "Use this pattern to filter files? (This is the default, no match found)"; then
+      die "Cancelled by user (no valid pattern found)"
+    else
+      break
+    fi
+  else
+    # If pattern was detected, user can reject and provide custom pattern
+    if confirm "Use this pattern to filter files?"; then
+      break
+    else
+      read -r -p "Enter custom search pattern (or press Enter to abort): " custom_pattern
+      if [[ -z "$custom_pattern" ]]; then
+        die "No pattern provided, cancelled by user"
+      fi
+      SEARCH_PATTERN="$custom_pattern"
+      log "Using manually entered pattern: $SEARCH_PATTERN"
+      # After manual entry, we don't know if it's valid; we'll just proceed
+    fi
+  fi
+done
 
 # ---------- MIGRATION ----------
 log "Preparing HTTP statistics..."
