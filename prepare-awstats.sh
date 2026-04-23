@@ -11,18 +11,25 @@ die()  { printf '[%s] ERROR: %s\n' "$(date '+%F %T')" "$*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-Usage:
-  ./$SCRIPT_NAME -P destination_domain [-s source_domain] [-h]
 
-Options:
-  -P   Destination domain in Plesk (required)
-  -s   Source domain where to search tmp files (optional)
-  -h   Show this help
+Usage:
+  ./$SCRIPT_NAME destination_domain [-s source_domain] [-h]
+
+Arguments:
+  destination_domain    Domain in Plesk (required)
+  -s source_domain      Source domain where to search tmp files (optional)
+  -h                    Show this help
+
+Examples:
+  ./$SCRIPT_NAME midominio.com
+  ./$SCRIPT_NAME midominio.com -s origencpanel.com
+
 EOF
 }
 
 ascii_header() {
   cat <<'EOF'
+
 ┏━╸┏━┓┏━┓┏┓╻┏━╸╻     ╺┳╸┏━┓   ┏━┓╻  ┏━╸┏━┓╻┏
 ┃  ┣━┛┣━┫┃┗┫┣╸ ┃      ┃ ┃ ┃   ┣━┛┃  ┣╸ ┗━┓┣┻┓
 ┗━╸╹  ╹ ╹╹ ╹┗━╸┗━╸    ╹ ┗━┛   ╹  ┗━╸┗━╸┗━┛╹ ╹
@@ -74,7 +81,6 @@ find_site_root() {
 
 detect_real_domain() {
   local cpanel_name="$1"
-  
   local domain_prefix="${cpanel_name%%.*}"
   
   log "Searching for real domain for prefix: $domain_prefix"
@@ -114,18 +120,15 @@ rename_and_move_txts() {
 
   mkdir -p "$target_dir"
 
-  # Gather all awstats*.txt files
   local all_files=("$source_dir"/awstats*.txt)
   if (( ${#all_files[@]} == 0 )); then
     log "No .txt files found in $source_dir ($kind)."
     return 0
   fi
 
-  # Filter files where the domain part exactly matches search_pattern
   local file base domain_part
   for file in "${all_files[@]}"; do
     base="$(basename "$file")"
-    # Extract the part after awstatsYYYYMM. and before .txt
     domain_part="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
     domain_part="${domain_part%.txt}"
     if [[ "$domain_part" == "$search_pattern" ]]; then
@@ -154,12 +157,26 @@ rename_and_move_txts() {
   done
 }
 
+# ---------- ARGUMENT PARSING ----------
+# First positional argument is destination domain
 DOMAIN_DEST=""
 DOMAIN_SOURCE=""
 
-while getopts ":P:s:h" opt; do
+# Manual parsing because we have a positional arg
+if [[ $# -eq 0 ]]; then
+  usage
+  die "Destination domain is required"
+fi
+
+# The first argument (if not starting with -) is DOMAIN_DEST
+if [[ "$1" != "-"* ]]; then
+  DOMAIN_DEST="$1"
+  shift
+fi
+
+# Parse remaining options
+while getopts ":s:h" opt; do
   case "$opt" in
-    P) DOMAIN_DEST="$OPTARG" ;;
     s) DOMAIN_SOURCE="$OPTARG" ;;
     h)
       usage
@@ -174,13 +191,17 @@ while getopts ":P:s:h" opt; do
   esac
 done
 
-[[ -n "$DOMAIN_DEST" ]] || { usage; die "You must specify the destination domain with -P domain.com"; }
+if [[ -z "$DOMAIN_DEST" ]]; then
+  usage
+  die "You must specify the destination domain as first argument"
+fi
 
 if [[ -z "$DOMAIN_SOURCE" ]]; then
   DOMAIN_SOURCE="$DOMAIN_DEST"
   log "Option -s not specified, using the same domain as source: $DOMAIN_SOURCE"
 fi
 
+# ---------- MAIN ----------
 ascii_header
 echo
 
@@ -214,53 +235,57 @@ if ! confirm "Are these paths correct?"; then
   die "Cancelled by user"
 fi
 
+# ---------- SMART PATTERN DETECTION ----------
 log "Analyzing available files to determine the correct pattern..."
 
 SEARCH_PATTERN="$DOMAIN_DEST"
 
 if [[ -d "$CPANEL_AWSTATS_DIR" ]]; then
   shopt -s nullglob
-  awstats_files=("$CPANEL_AWSTATS_DIR"/awstats*.txt)
+  all_files=("$CPANEL_AWSTATS_DIR"/awstats*.txt)
   shopt -u nullglob
   
-  if (( ${#awstats_files[@]} > 0 )); then
-    sample_file="$(basename "${awstats_files[0]}")"
-    sample_pattern="${sample_file#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
-    sample_pattern="${sample_pattern%.txt}"
+  if (( ${#all_files[@]} > 0 )); then
+    log "Found ${#all_files[@]} total files, scanning for pattern matching destination domain..."
     
-    log "Sample file: $sample_file"
-    log "Detected pattern: $sample_pattern"
-    
-    if [[ "$sample_pattern" != "$DOMAIN_DEST" ]]; then
-      log "Pattern ($sample_pattern) differs from destination domain ($DOMAIN_DEST)"
+    FOUND_MATCH=0
+    for file in "${all_files[@]}"; do
+      base="$(basename "$file")"
+      pattern="${base#awstats[0-9][0-9][0-9][0-9][0-9][0-9].}"
+      pattern="${pattern%.txt}"
       
-      prefix="${sample_pattern%%.*}"
+      # Get real domain for this pattern
+      real_domain="$(detect_real_domain "$pattern")"
       
-      DETECTED_DOMAIN="$(detect_real_domain "$sample_pattern")"
-      
-      if [[ "$DETECTED_DOMAIN" != "$sample_pattern" ]]; then
-        log "Real domain detected: $DETECTED_DOMAIN"
-        
-        if [[ "$DETECTED_DOMAIN" == "$DOMAIN_DEST" ]]; then
-          log "Matches requested destination, using pattern: $sample_pattern"
-          SEARCH_PATTERN="$sample_pattern"
-        else
-          warn "Detected pattern ($sample_pattern) corresponds to $DETECTED_DOMAIN, but you requested $DOMAIN_DEST"
-          warn "Using pattern: $DOMAIN_DEST (may not find files)"
-        fi
+      if [[ "$real_domain" == "$DOMAIN_DEST" ]]; then
+        log "Found matching pattern: $pattern (real domain: $real_domain)"
+        SEARCH_PATTERN="$pattern"
+        FOUND_MATCH=1
+        break
       fi
+    done
+    
+    if [[ $FOUND_MATCH -eq 0 ]]; then
+      warn "Could not find any pattern matching destination domain '$DOMAIN_DEST'"
+      warn "Will use destination domain as pattern: $SEARCH_PATTERN"
+      warn "This may not find any files to move"
     fi
+  else
+    log "No awstats files found in $CPANEL_AWSTATS_DIR"
   fi
+else
+  log "Directory $CPANEL_AWSTATS_DIR does not exist"
 fi
 
 log "Final search pattern: $SEARCH_PATTERN"
 echo
 
 if ! confirm "Use this pattern to filter files?"; then
-  log "You can run again with -P and the exact pattern name"
+  log "You can run again with different arguments"
   die "Cancelled by user"
 fi
 
+# ---------- MIGRATION ----------
 log "Preparing HTTP statistics..."
 rename_and_move_txts "$CPANEL_AWSTATS_DIR" "$PLESK_STATS_DIR" "-http" "HTTP" "$SEARCH_PATTERN"
 
