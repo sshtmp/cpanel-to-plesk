@@ -322,6 +322,8 @@ fi
 # ---------- PATTERN DETECTION ----------
 if [[ -n "$SEARCH_OVERRIDE" ]]; then
   SEARCH_PATTERN="$SEARCH_OVERRIDE"
+  PATTERN_FOUND=1
+  IS_FALLBACK=0
   log "Using overridden search pattern: $SEARCH_PATTERN"
 else
   log "Analyzing available files to determine the correct pattern..."
@@ -344,6 +346,7 @@ else
         if [[ "$pattern" == "$DOMAIN_DEST" ]]; then
           SEARCH_PATTERN="$pattern"
           PATTERN_FOUND=1
+          IS_FALLBACK=0
           log "Found exact pattern match: $pattern"
           break
         fi
@@ -357,6 +360,7 @@ else
           if [[ "$pattern" == "$DOMAIN_DEST".* ]]; then
             SEARCH_PATTERN="$pattern"
             PATTERN_FOUND=1
+            IS_FALLBACK=0
             log "Found pattern starting with destination domain: $pattern"
             break
           fi
