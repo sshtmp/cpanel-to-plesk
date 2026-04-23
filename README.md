@@ -1,24 +1,71 @@
-# Knowledge Base Article Scripts
+# prepare-awstats.sh
 
-This repository contains the scripts mentioned in various Plesk knowledge base articles.
+Script to migrate AWStats statistics from cPanel to Plesk.
 
-# Structure
-
-The repository structure is the following:
+## Usage
 
 ```
-kb-scripts
-├── ...
-├── rebuild-awstats
-│   ├── 213901965.kb
-│   └── rebuild-awstats.sh
-├── update-chroot
-│   └── update-chroot.sh
-└── ...
+./prepare-awstats.sh -P domain.com [-s source-domain.com]
 ```
 
-Each script is stored in a separate directory. Shell scripts should have .sh suffix in the file name. The reference to the corresponding KB article is implemented using empty file flags (e.g. `213901965.kb`)
+## Arguments
 
-# Contribution
+-P   Destination domain in Plesk (required)
+-s   Domain where tmp files are located (optional, if different from destination)
+-h   Show help
 
-Fill free to submit pull requests. Please follow [best practices](https://git-scm.com/book/en/v2/Distributed-Git-Contributing-to-a-Project). Scripts should be well tested, have "usage" block and clear explanation of applicability.
+## How to use
+
+### 1. Prepare the files
+
+Copy the AWStats files from cPanel backup to this location on the Plesk server:
+
+/var/www/vhosts/[SOURCE-DOMAIN]/tmp/awstats/
+/var/www/vhosts/[SOURCE-DOMAIN]/tmp/awstats/ssl/
+
+Example:
+
+```bash
+mkdir -p /var/www/vhosts/maindomain.com/tmp/awstats/ssl
+cp /backup/awstats/*.txt /var/www/vhosts/maindomain.com/tmp/awstats/
+cp /backup/awstats/ssl/*.txt /var/www/vhosts/maindomain.com/tmp/awstats/ssl/
+```
+
+### 2. Run the script
+
+Case 1: Files are on the same destination domain
+
+```bash
+./prepare-awstats.sh -P mydomain.com
+```
+
+Case 2: Files are on a different domain (e.g., a main account that contained addons)
+
+```bash
+./prepare-awstats.sh -P mydomain.com -s mainaccount.com
+```
+
+### 3. Repeat for each domain
+
+```bash
+./prepare-awstats.sh -P domain1.com -s mainaccount.com
+./prepare-awstats.sh -P domain2.net -s mainaccount.com
+./prepare-awstats.sh -P domain3.org -s mainaccount.com
+```
+
+### 4. Rebuild statistics
+
+When finished, the script will ask if you want to run rebuild-awstats.sh. Answer 'y' so Plesk processes the files.
+
+## Important paths
+
+Source files (HTTP):   /var/www/vhosts/[source-domain]/tmp/awstats/*.txt
+Source files (HTTPS):  /var/www/vhosts/[source-domain]/tmp/awstats/ssl/*.txt
+Destination (HTTP):    /var/www/vhosts/system/[destination-domain]/statistics/webstat/
+Destination (HTTPS):   /var/www/vhosts/system/[destination-domain]/statistics/webstat-ssl/
+
+## Notes
+
+- The script only moves files that match the destination domain name
+- Files are renamed adding -http.txt or -https.txt suffix
+- Original files are removed from the source directory after moving
