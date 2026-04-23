@@ -160,6 +160,7 @@ done
 
 if [[ -z "$DOMAIN_SOURCE" ]]; then
   DOMAIN_SOURCE="$DOMAIN_DEST"
+  echo
   log "Option -s not specified, using the same domain as source: $DOMAIN_SOURCE"
 fi
 
