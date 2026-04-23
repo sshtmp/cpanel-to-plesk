@@ -178,6 +178,7 @@ done
 
 if [[ -z "$DOMAIN_SOURCE" ]]; then
   DOMAIN_SOURCE="$DOMAIN_DEST"
+  echo
   log "Option -s not specified, using the same domain as source: $DOMAIN_SOURCE"
 fi
 
@@ -200,7 +201,6 @@ CPANEL_AWSTATS_SSL_DIR="$CPANEL_AWSTATS_DIR/ssl"
 PLESK_STATS_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat"
 PLESK_STATS_SSL_DIR="/var/www/vhosts/system/$DOMAIN_DEST/statistics/webstat-ssl"
 
-echo
 log "Calculated paths:"
 printf '  Source (tmp):          %s\n' "$SITE_ROOT_SOURCE"
 printf '  Destination (root):    %s\n' "$SITE_ROOT_DEST"
@@ -213,6 +213,7 @@ echo
 if ! confirm "Are these paths correct?"; then
   die "Cancelled by user"
 fi
+echo
 
 log "Analyzing available files to determine the correct pattern..."
 
@@ -260,17 +261,21 @@ if ! confirm "Use this pattern to filter files?"; then
   log "You can run again with -P and the exact pattern name"
   die "Cancelled by user"
 fi
+echo
 
 log "Preparing HTTP statistics..."
 rename_and_move_txts "$CPANEL_AWSTATS_DIR" "$PLESK_STATS_DIR" "-http" "HTTP" "$SEARCH_PATTERN"
+echo
 
 log "Preparing HTTPS statistics..."
 rename_and_move_txts "$CPANEL_AWSTATS_SSL_DIR" "$PLESK_STATS_SSL_DIR" "-https" "HTTPS" "$SEARCH_PATTERN"
-
 echo
+
 log "Preparation process completed."
+echo
 
 if confirm "Do you want to run ./rebuild-awstats.sh -R $DOMAIN_DEST to rebuild statistics?"; then
+  echo
   REBUILD_SCRIPT="$SCRIPT_DIR/rebuild-awstats.sh"
   if [[ ! -f "$REBUILD_SCRIPT" ]]; then
     die "Cannot find $REBUILD_SCRIPT"
