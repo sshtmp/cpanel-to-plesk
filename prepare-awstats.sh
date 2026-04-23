@@ -80,30 +80,31 @@ find_site_root() {
   return 1
 }
 
+# --------------------------------------------------------------
+# FUNCIÓN CORREGIDA: detecta el dominio real en Plesk
+# --------------------------------------------------------------
 detect_real_domain() {
   local cpanel_name="$1"
   
-  # Primero, comprobar si el nombre completo existe como dominio en Plesk
+  # 1. Si el nombre completo del patrón existe como dominio en Plesk
   if [[ -d "/var/www/vhosts/system/$cpanel_name" ]]; then
     echo "$cpanel_name"
     return 0
   fi
   
-  # Extraer la primera parte (antes del primer punto)
+  # 2. Extraer la primera parte (hasta el primer punto)
   local first_part="${cpanel_name%%.*}"
   if [[ -d "/var/www/vhosts/system/$first_part" ]]; then
     echo "$first_part"
     return 0
   fi
   
-  # Si no, buscar por prefijo (comportamiento antiguo)
-  local domain_prefix="$first_part"
-  log "Searching for real domain for prefix: $domain_prefix"
-  
+  # 3. Fallback: buscar por prefijo (comportamiento antiguo)
+  log "Searching for real domain for prefix: $first_part"
   local found_domain=""
   while IFS= read -r domain_dir; do
     local domain_name="$(basename "$domain_dir")"
-    if [[ "$domain_name" == "$domain_prefix".* ]] || [[ "$domain_name" == "$domain_prefix" ]]; then
+    if [[ "$domain_name" == "$first_part".* ]] || [[ "$domain_name" == "$first_part" ]]; then
       found_domain="$domain_name"
       log "Found: $found_domain"
       break
